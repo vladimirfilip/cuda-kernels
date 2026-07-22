@@ -14,15 +14,36 @@
     } while (0)
 
 #define cdiv(a, b) ((a + b - 1) / b)
+#define TILE_WIDTH 16
 
 __global__ void matmul(const float *a, const float *b, float *c, int M, int K, int N) {
-    int x = blockIdx.x * blockDim.x + threadIdx.x;
-    int y = blockIdx.y * blockDim.y + threadIdx.y;
-    if (x < N && y < M) {
-        float acc = 0.0f;
-        for (int k = 0; k < K; k++) acc += a[y * K + k] * b[k * K + x];
-        c[y * N + x] = acc;
+
+    __shared__ float As[TILE_WIDTH][TILE_WIDTH];
+    __shared__ float Bs[TILE_WIDTH][TILE_WIDTH];
+
+    int tx = threadIdx.x;
+    int ty = threadIdx.y;
+    int x = blockIdx.x * TILE_WIDTH + tx;
+    int y = blockIdx.y * TILE_WIDTH + ty;
+    
+    float acc = 0.0f;
+    int phases = cdiv(K, TILE_WIDTH);
+
+    for (int i = 0; i < phases; i++) {
+        int _x = i * TILE_WIDTH + tx, _y = i * TILE_WIDTH + ty;
+        As[ty][tx] = y < M && _x < K ? a[y * K + _x] : 0.0f;
+        Bs[ty][tx] = _y < K && x < N ? b[_y * N + x] : 0.0f;
+
+        __syncthreads();
+
+        for (int k = 0; k < TILE_WIDTH; k++) {
+            acc += As[ty][k] * Bs[k][tx];
+        }
+
+        __syncthreads();
     }
+    if (x < N && y < M)
+        c[y * N + x] = acc;
 }
 
 int main() {
@@ -45,8 +66,8 @@ int main() {
     CUDA_CHECK(cudaMemcpy(d_a, h_a, bytes, cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_b, h_b, bytes, cudaMemcpyHostToDevice));
 
-    dim3 block(16, 16);
-    dim3 grid(cdiv(n, 16), cdiv(n, 16));
+    dim3 block(TILE_WIDTH, TILE_WIDTH);
+    dim3 grid(cdiv(n, TILE_WIDTH), cdiv(n, TILE_WIDTH));
     // Warm-up launch to pay one-time JIT/context costs before timing.
     matmul<<<grid, block>>>(d_a, d_b, d_c, n, n, n);
     CUDA_CHECK(cudaGetLastError());
@@ -89,7 +110,7 @@ int main() {
         }
         max_err = fmax(max_err, fabs(h_c[i] - c));
     }
-    printf("%s: %ds%d elements, max error = %g\n", __FILE__, n, n, max_err);
+    printf("%s: %dx%d elements, max error = %g\n", __FILE__, n, n, max_err);
 
     CUDA_CHECK(cudaFree(d_a));
     CUDA_CHECK(cudaFree(d_b));
