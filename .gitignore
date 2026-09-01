@@ -6,3 +6,9 @@
 *.fatbin
 .venv
 bin
+bench/results/
+*.ncu-rep
+*.nsys-rep
+*.sqlite
+__pycache__/
+.pytest_cache/

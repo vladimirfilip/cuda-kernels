@@ -1,0 +1,5 @@
+torch>=2.7
+ninja
+triton>=3.2
+numpy
+pytest
