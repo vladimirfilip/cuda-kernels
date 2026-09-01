@@ -9,10 +9,20 @@
 # Profiling and run targets honor KERNEL, e.g.  make ncu KERNEL=vector_add
 # On a shared box, pick a free GPU with GPU=, e.g.  make run GPU=1
 # Lighten ncu's impact on shared GPUs with NCU_SET=basic (default: full).
+#
+#   make sanitize KERNEL=k   # compute-sanitizer memcheck + racecheck
+#   make torch-test          # pytest correctness for the torch_ext ops
+#   make bench               # run the benchmark scaffold
+# Set FASTMATH=1 to append --use_fast_math (A/B the rsqrt path without editing source).
 
 NVCC    ?= nvcc
 ARCH    ?= native
-NVFLAGS ?= -O2 -arch=$(ARCH)
+NVFLAGS ?= -O2 -std=c++17 -arch=$(ARCH)
+FASTMATH ?=
+ifeq ($(FASTMATH),1)
+NVFLAGS += --use_fast_math
+endif
+VENV    ?= .venv/bin
 # -lineinfo lets ncu attribute stalls to source lines without the -G penalty.
 PROFFLAGS ?= -lineinfo
 KERNEL  ?= vector_add
@@ -32,12 +42,14 @@ BIN_DIR := bin
 # One binary per .cu file in src/.
 SOURCES := $(wildcard $(SRC_DIR)/*.cu)
 TARGETS := $(patsubst $(SRC_DIR)/%.cu,$(BIN_DIR)/%,$(SOURCES))
+# Rebuild a binary when any shared header changes.
+HEADERS := $(wildcard $(SRC_DIR)/*.cuh)
 
-.PHONY: all run nsys ncu clean
+.PHONY: all run nsys ncu sanitize torch-test bench clean
 
 all: $(TARGETS)
 
-$(BIN_DIR)/%: $(SRC_DIR)/%.cu | $(BIN_DIR)
+$(BIN_DIR)/%: $(SRC_DIR)/%.cu $(HEADERS) | $(BIN_DIR)
 	$(NVCC) $(NVFLAGS) $(PROFFLAGS) $< -o $@
 
 $(BIN_DIR):
@@ -53,10 +65,22 @@ nsys: $(BIN_DIR)/${KERNEL}
 		-o $(BIN_DIR)/${KERNEL}.nsys ./$(BIN_DIR)/${KERNEL}
 
 # Per-kernel hardware profile: why is this kernel slow? Full section set,
-# limited to one launch of the named kernel to keep overhead sane.
+# one launch of the named kernel, skipping the warm-up launch.
 ncu: $(BIN_DIR)/${KERNEL}
-	$(GPU_ENV) $(NCU) --set $(NCU_SET) -k ${KERNEL} -c 1 -f \
+	$(GPU_ENV) $(NCU) --set $(NCU_SET) -k "regex:${KERNEL}" --launch-skip 1 -c 1 -f \
 		-o $(BIN_DIR)/${KERNEL}.ncu ./$(BIN_DIR)/${KERNEL}
+
+# Correctness / race checks — valuable for reduction kernels with shared memory.
+sanitize: $(BIN_DIR)/${KERNEL}
+	$(GPU_ENV) compute-sanitizer --tool memcheck  ./$(BIN_DIR)/${KERNEL}
+	$(GPU_ENV) compute-sanitizer --tool racecheck ./$(BIN_DIR)/${KERNEL}
+
+# PyTorch-extension surface (built out-of-tree by torch.utils.cpp_extension.load).
+torch-test:
+	$(GPU_ENV) $(VENV)/pytest -q tests/
+
+bench:
+	$(GPU_ENV) $(VENV)/python bench/bench_rmsnorm.py
 
 clean:
 	rm -rf $(BIN_DIR)
