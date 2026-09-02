@@ -93,7 +93,7 @@ int run_dtype(const char *tag, const std::vector<double> &hx,
     CUDA_CHECK(cudaMemcpy(dw, hw_t.data(), H * sizeof(T), cudaMemcpyHostToDevice));
 
     // Warm-up (pays one-time JIT/context costs; profile with --launch-skip 1).
-    launch_rmsnorm_fused_v0<T>(dx, dres, dw, dh, dout, N, H, eps);
+    launch_rmsnorm_fused<T>(dx, dres, dw, dh, dout, N, H, eps);
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
 
@@ -102,7 +102,7 @@ int run_dtype(const char *tag, const std::vector<double> &hx,
     CUDA_CHECK(cudaEventCreate(&stop));
     CUDA_CHECK(cudaEventRecord(start));
     for (int it = 0; it < iters; ++it)
-        launch_rmsnorm_fused_v0<T>(dx, dres, dw, dh, dout, N, H, eps);
+        launch_rmsnorm_fused<T>(dx, dres, dw, dh, dout, N, H, eps);
     CUDA_CHECK(cudaEventRecord(stop));
     CUDA_CHECK(cudaEventSynchronize(stop));
     CUDA_CHECK(cudaGetLastError());

@@ -37,13 +37,13 @@ rmsnorm_add(torch::Tensor x, torch::Tensor residual, torch::Tensor weight,
     const float epsf = static_cast<float>(eps);
 
     if (x.scalar_type() == torch::kFloat32) {
-        launch_rmsnorm_fused_v0<float>(
+        launch_rmsnorm_fused<float>(
             x.data_ptr<float>(), residual.data_ptr<float>(),
             weight.data_ptr<float>(), h.data_ptr<float>(), out.data_ptr<float>(),
             N, H, epsf, stream);
     } else {
         using bf16 = __nv_bfloat16;
-        launch_rmsnorm_fused_v0<bf16>(
+        launch_rmsnorm_fused<bf16>(
             reinterpret_cast<const bf16 *>(x.data_ptr<at::BFloat16>()),
             reinterpret_cast<const bf16 *>(residual.data_ptr<at::BFloat16>()),
             reinterpret_cast<const bf16 *>(weight.data_ptr<at::BFloat16>()),
