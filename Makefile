@@ -17,7 +17,7 @@
 
 VENV    ?= .venv/bin
 
-CUDA_TK := $(shell $(VENV)/python -c "import sysconfig, os; print(os.path.join(sysconfig.get_paths()['purelib'], 'nvidia', 'cu13'))")
+CUDA_TK := /usr/local/cuda
 NVCC    ?= $(CUDA_TK)/bin/nvcc
 # 'native' needs CUDA >= 11.5; override for cross-compiles, e.g. ARCH=sm_90.
 ARCH    ?= native
@@ -93,9 +93,6 @@ sanitize: $(BIN_DIR)/${KERNEL}
 	$(GPU_ENV) $(SANITIZER) --tool racecheck ./$(BIN_DIR)/${KERNEL}
 
 # PyTorch-extension surface (built out-of-tree by torch.utils.cpp_extension.load).
-# The system nvcc (CUDA 11.5) is too old for the torch wheel (needs CUDA 13 /
-# c++20), so point the JIT build at the same venv toolkit used above. PATH also
-# needs the venv bin so torch can find `ninja`.
 TORCH_ENV := PATH="$(CURDIR)/$(VENV):$$PATH" CUDA_HOME="$(CUDA_TK)"
 
 torch-test:
