@@ -88,14 +88,49 @@ __global__ void rmsnorm_fused_v0(const T *__restrict__ x,
     }
 }
 
+// v1: one warp per row for coalesced reads and writes to memory.
+template <typename T>
+__global__ void rmsnorm_fused_v1(const T *__restrict__ x,
+                                 const T *__restrict__ residual,
+                                 const T *__restrict__ weight,
+                                 T *__restrict__ h, T *__restrict__ out,
+                                 int N, int H, float eps)
+{
+    const int lane = threadIdx.x % 32;
+    const int row = (blockDim.x * blockIdx.x + threadIdx.x) / 32;
+    if (row >= N) return;
+
+    const T *xr = x + static_cast<size_t>(row) * H;
+    const T *rr = residual + static_cast<size_t>(row) * H;
+    T *hr = h + static_cast<size_t>(row) * H;
+    T *or_ = out + static_cast<size_t>(row) * H;
+
+    float sum = 0.0f;
+    for (int i = lane; i < H; i += 32) {
+        float hv = to_f32<T>(xr[i]) + to_f32<T>(rr[i]);
+        hr[i] = from_f32<T>(hv);
+        sum += hv * hv;
+    }
+
+    for (int offset = 16; offset > 0; offset >>= 1)
+        sum += __shfl_down_sync(__activemask(), sum, offset);
+    sum = __shfl_sync(__activemask(), sum, 0);
+
+    const float inv_rms = rsqrtf(sum / static_cast<float>(H) + eps);
+    for (int i = lane; i < H; i += 32) {
+        float hv = to_f32<T>(hr[i]);
+        or_[i] = from_f32<T>(hv * inv_rms * to_f32<T>(weight[i]));
+    }
+}
+
 // Single place to pick launch config; reused by the standalone binary and the
 // PyTorch op so both exercise the same path.
 template <typename T>
-inline void launch_rmsnorm_fused_v0(const T *x, const T *residual, const T *weight,
+inline void launch_rmsnorm_fused(const T *x, const T *residual, const T *weight,
                                     T *h, T *out, int N, int H, float eps,
                                     cudaStream_t stream = 0) {
-    const int block = 256;
-    const int grid = cdiv(N, block);
-    rmsnorm_fused_v0<T><<<grid, block, 0, stream>>>(x, residual, weight, h, out,
+    const int block = 256;            // 8 warps per block => 8 rows per block
+    const int grid = cdiv(N, block / 32);
+    rmsnorm_fused_v1<T><<<grid, block, 0, stream>>>(x, residual, weight, h, out,
                                                     N, H, eps);
 }
