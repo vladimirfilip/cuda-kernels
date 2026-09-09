@@ -36,9 +36,17 @@ jobs:
       - name: Lint
         run: ruff check kernels/
       - name: Collect tests
-        # The GPU suites skip themselves at module level without CUDA; this
-        # still catches import errors, syntax errors and bad fixtures.
-        run: pytest kernels/ --collect-only -q
+        # Every test module module-skips (`pytest.skip(..., allow_module_level=True)`)
+        # without CUDA, so nothing is ever collected here -- pytest's exit code 5
+        # ("no tests collected") is the expected, passing outcome on this runner.
+        # A real import/syntax/fixture error surfaces as a distinct exit code
+        # (2, "interrupted: error during collection") and still fails the job.
+        run: |
+          pytest kernels/ --collect-only -q
+          code=$?
+          if [ "$code" -ne 0 ] && [ "$code" -ne 5 ]; then
+            exit "$code"
+          fi
 
   notebooks:
     name: notebooks are valid
