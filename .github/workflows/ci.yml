@@ -1,0 +1,66 @@
+name: CI
+
+# GitHub's hosted runners have no GPU, so this workflow proves the CUDA
+# compiles, the Triton kernels import, and the Python is clean. The correctness
+# suites need a GPU and are run locally -- see the "GPU tests" job note below.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  cuda-compile:
+    name: nvcc compile (sm_89)
+    runs-on: ubuntu-latest
+    container: nvidia/cuda:13.0.1-devel-ubuntu24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build every standalone driver
+        # ARCH must be explicit: the default 'native' probes the local GPU,
+        # and there isn't one on a CI runner.
+        run: make all ARCH=sm_89
+
+  python:
+    name: lint + import
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Install (CPU torch, no CUDA needed to import)
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[dev]"
+      - name: Lint
+        run: ruff check kernels/
+      - name: Collect tests
+        # The GPU suites skip themselves at module level without CUDA; this
+        # still catches import errors, syntax errors and bad fixtures.
+        run: pytest kernels/ --collect-only -q
+
+  notebooks:
+    name: notebooks are valid
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: pip install nbformat
+      - name: Validate notebook JSON and check outputs are committed
+        run: |
+          python - <<'PY'
+          import sys, pathlib, nbformat
+          bad = []
+          for p in pathlib.Path("kernels").rglob("*.ipynb"):
+              nb = nbformat.read(p, as_version=4)
+              nbformat.validate(nb)
+              code = [c for c in nb.cells if c.cell_type == "code"]
+              if code and not any(c.get("outputs") for c in code):
+                  bad.append(str(p))
+          if bad:
+              sys.exit("notebooks committed without outputs: " + ", ".join(bad))
+          print("all notebooks valid and populated")
+          PY
