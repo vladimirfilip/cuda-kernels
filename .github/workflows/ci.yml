@@ -42,8 +42,12 @@ jobs:
         # A real import/syntax/fixture error surfaces as a distinct exit code
         # (2, "interrupted: error during collection") and still fails the job.
         run: |
+          # GitHub runs this with `bash -e`, so guard the expected non-zero
+          # exit or the step aborts before we can inspect the code.
+          set +e
           pytest kernels/ --collect-only -q
           code=$?
+          set -e
           if [ "$code" -ne 0 ] && [ "$code" -ne 5 ]; then
             exit "$code"
           fi
