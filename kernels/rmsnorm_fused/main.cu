@@ -6,7 +6,7 @@
 //   ./bin/rmsnorm_fused [N] [H] [iters] [peak_gbps]
 //
 // Runs the op for fp32 and bf16, checks each against an fp64 CPU reference, and
-// reports ms/launch + effective GB/s + % of peak HBM bandwidth. Exits non-zero
+// reports ms/launch + effective GB/s + % of peak DRAM bandwidth. Exits non-zero
 // if either dtype is outside tolerance, so `make run` doubles as a smoke test.
 
 #include <cmath>
@@ -24,7 +24,7 @@ namespace {
 constexpr int kDefaultN = 4096;
 constexpr int kDefaultH = 2048;
 constexpr int kDefaultIters = 200;
-// RTX 4070 Ti spec HBM bandwidth: 21 Gbps GDDR6X on a 192-bit bus = 504 GB/s.
+// RTX 4070 Ti spec DRAM bandwidth: 21 Gbps GDDR6X on a 192-bit bus = 504 GB/s.
 // Override via argv[4] on other hardware.
 constexpr double kDefaultPeakGbps = 504.0;
 
@@ -157,8 +157,8 @@ int main(int argc, char **argv) {
     // Traffic lower bound: read x + residual, write h + out.
     const double fp32_mb = 4.0 * n * sizeof(float) / 1.0e6;
     printf("traffic %.1f MB (fp32) -- %s\n", fp32_mb,
-           fp32_mb < 48.0 ? "FITS IN L2, not an HBM measurement"
-                          : "exceeds L2, HBM-bound");
+           fp32_mb < 48.0 ? "FITS IN L2, not a DRAM measurement"
+                          : "exceeds L2, DRAM-bound");
     printf("peak %.0f GB/s\n\n", peak_gbps);
     printf("%-4s %-9s %9s %8s %8s   %11s   %s\n", "type", "variant",
            "ms/launch", "GB/s", "%peak", "tol h / out", "");

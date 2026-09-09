@@ -9,7 +9,7 @@ For every (N, H, dtype) cell it times three things:
   norm     - F.rms_norm alone on a precomputed h     <- lower bound (no add, no h write)
 
 Writes results/rmsnorm_<timestamp>.csv and prints a table. Sizes are kept past
-this card's 48 MB L2 so the %peak column measures HBM, not cache.
+this card's 48 MB L2 so the %peak column measures DRAM, not cache.
 """
 
 import argparse
@@ -25,7 +25,7 @@ from kernels.rmsnorm_fused.op import rmsnorm_add
 
 # The smallest cells here used to be a few MB, which fits entirely in this
 # card's 48 MB L2 -- those rows reported "bandwidth" several times the card's
-# HBM limit. The sweep now starts past L2 so %peak means what it claims; the
+# DRAM limit. The sweep now starts past L2 so %peak means what it claims; the
 # L2_MB column records the footprint so the reader can check.
 N_VALUES = [4096, 8192, 16384, 32768]
 H_VALUES = [2048, 3072, 4096]
@@ -50,7 +50,7 @@ def bench_cell(n, h, dtype_name, dtype, peak_gbps):
     }
     # Each variant moves a different amount, so each gets its own traffic model.
     # Charging all three the fused op's traffic (as an earlier version did) made
-    # the cheapest variant look like it exceeded the card's HBM bandwidth.
+    # the cheapest variant look like it exceeded the card's DRAM bandwidth.
     elem = x.element_size()
     tensor = n * h * elem
     traffic = {
@@ -86,7 +86,7 @@ def bench_cell(n, h, dtype_name, dtype, peak_gbps):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--peak-gbps", type=float, default=504.0,
-                    help="HBM bandwidth for the %%-peak column (RTX 4070 Ti = 504)")
+                    help="DRAM bandwidth for the %%-peak column (RTX 4070 Ti = 504)")
     ap.add_argument("--quick", action="store_true",
                     help="one small shape, for a fast sanity run")
     args = ap.parse_args()
@@ -95,7 +95,7 @@ def main():
     print(f"# {torch.cuda.get_device_name()}  torch {torch.__version__}")
 
     # Even the quick shape stays past L2, so a fast run is still a real
-    # HBM measurement rather than a cache benchmark.
+    # DRAM measurement rather than a cache benchmark.
     n_values, h_values = ([8192], [2048]) if args.quick else (N_VALUES, H_VALUES)
 
     all_rows = []

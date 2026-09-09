@@ -14,7 +14,7 @@
 //
 // This kernel is memory bound. Traffic lower bound is 4 * N * H * sizeof(T)
 // (read x + residual, write h + out; weight is negligible). The roofline goal is
-// to approach HBM bandwidth (504 GB/s on the RTX 4070 Ti / sm_89 reference box;
+// to approach DRAM bandwidth (504 GB/s on the RTX 4070 Ti / sm_89 reference box;
 // see docs/profiling.md).
 //
 // Three rungs are kept side by side so the optimization ladder is reproducible

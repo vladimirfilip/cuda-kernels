@@ -6,8 +6,8 @@
 // This kernel is trivial; the driver is the interesting part. It sweeps the
 // working-set size from well inside L2 to well past it, which makes a
 // measurement trap visible: at small n the "effective bandwidth" number is
-// several times the card's theoretical HBM bandwidth, because nothing is
-// actually reaching HBM. Only the largest sizes measure what the roofline
+// several times the card's theoretical DRAM bandwidth, because nothing is
+// actually reaching DRAM. Only the largest sizes measure what the roofline
 // model assumes they measure.
 
 #include <cmath>
@@ -84,9 +84,9 @@ int main(int argc, char **argv) {
 
         // The crossover is gradual, not a cliff: a footprint a little over L2
         // still gets most of its traffic served by cache.
-        const char *regime = mb_moved < l2_mb        ? "L2-resident (not an HBM measurement)"
-                             : mb_moved < 4 * l2_mb  ? "L2/HBM transition"
-                                                     : "HBM-bound";
+        const char *regime = mb_moved < l2_mb        ? "L2-resident (not a DRAM measurement)"
+                             : mb_moved < 4 * l2_mb  ? "L2/DRAM transition"
+                                                     : "DRAM-bound";
         printf("%12d %10.1f %10.4f %9.1f %7.1f%%  %s\n", n, mb_moved, ms, gbps,
                100.0 * gbps / peak_gbps, regime);
 

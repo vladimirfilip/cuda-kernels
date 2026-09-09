@@ -4,8 +4,8 @@
 //
 // Purely memory bound: 3 * n * sizeof(float) bytes moved, 1 FLOP per element.
 // Note that at small n the whole working set fits in L2 (48 MB on Ada), so the
-// reported "bandwidth" measures L2, not HBM, and can exceed the memory clock's
-// theoretical limit. Size the problem past L2 to measure HBM.
+// reported "bandwidth" measures L2, not DRAM, and can exceed the memory clock's
+// theoretical limit. Size the problem past L2 to measure DRAM.
 #pragma once
 
 #include "../_common/cuda_check.cuh"
