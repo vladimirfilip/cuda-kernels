@@ -1,14 +1,29 @@
+# Build artifacts
+bin/
 *.i
 *.ii
 *.gpu
 *.ptx
 *.cubin
 *.fatbin
-.venv
-bin
-bench/results/
+*.so
+*.o
+
+# Profiler output
 *.ncu-rep
 *.nsys-rep
 *.sqlite
+
+# Python
+.venv/
 __pycache__/
 .pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# Local editor/agent settings
+.claude/settings.local.json
+
+# NOTE: results/ is deliberately NOT ignored. Committed CSVs are what let a
+# reader check the numbers in the READMEs without owning the hardware.

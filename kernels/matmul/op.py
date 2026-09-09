@@ -3,7 +3,7 @@ from pathlib import Path
 import torch
 from torch.utils.cpp_extension import load
 
-_SRC = Path(__file__).with_suffix(".cu")
+_SRC = Path(__file__).parent / "binding.cu"
 
 load(
     name="cuda_kernels",

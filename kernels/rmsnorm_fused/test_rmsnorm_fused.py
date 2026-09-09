@@ -1,20 +1,15 @@
 """Correctness tests for torch.ops.rmsnorm_kernels.rmsnorm_add.
 
-    make torch-test            # or: .venv/bin/pytest -q tests/
+    make test                  # or: pytest kernels/rmsnorm_fused
 """
-
-import sys
-from pathlib import Path
 
 import pytest
 import torch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "torch_ext"))
-
 if not torch.cuda.is_available():
     pytest.skip("CUDA required", allow_module_level=True)
 
-from rmsnorm_fused import rmsnorm_add, ref_rmsnorm_add  # noqa: E402
+from kernels.rmsnorm_fused.op import ref_rmsnorm_add, rmsnorm_add
 
 SHAPES = [
     (1, 2048),        # single token

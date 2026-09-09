@@ -1,6 +1,6 @@
 """JIT loader + reference + smoke test for the fused RMSNorm + residual-add op.
 
-    python torch_ext/rmsnorm_fused.py        # build, check vs reference, time it
+    python -m kernels.rmsnorm_fused.op       # build, check vs reference, time it
 
 The compiled op is registered as ``torch.ops.rmsnorm_kernels.rmsnorm_add``.
 """
@@ -11,7 +11,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.cpp_extension import load
 
-_SRC = Path(__file__).with_suffix(".cu")
+_SRC = Path(__file__).parent / "binding.cu"
 
 load(
     name="rmsnorm_kernels",
@@ -64,7 +64,7 @@ def _demo():
         torch.cuda.synchronize()
         ms = start.elapsed_time(end) / iters
         gbps = 4 * N * H * x.element_size() / (ms * 1e6)
-        print(f"{str(dtype):>16}: {ms:.4f} ms/call  {gbps:.1f} GB/s  (N={N} H={H})")
+        print(f"{dtype!s:>16}: {ms:.4f} ms/call  {gbps:.1f} GB/s  (N={N} H={H})")
     print("OK")
 
 

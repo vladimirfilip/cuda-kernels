@@ -2,7 +2,7 @@
 #include <torch/extension.h>
 #include <tuple>
 
-#include "../src/rmsnorm_fused.cuh"
+#include "kernel.cuh"
 
 // Fused RMSNorm + residual add for row-major CUDA tensors.
 //   x, residual : [N, H]   weight : [H]

@@ -1,18 +1,15 @@
-# Makefile for building and running CUDA kernels.
+# Build, test, profile and benchmark the kernels in kernels/.
 #
-#   make          # build all kernels in src/
-#   make run      # build and run a single kernel
-#   make nsys     # timeline profile the chosen kernel (Nsight Systems)
-#   make ncu      # per-kernel hardware profile (Nsight Compute)
-#   make clean    # remove build artifacts
+#   make                     # build every standalone driver
+#   make run   KERNEL=matmul # build and run one driver (self-checks + times itself)
+#   make test                # pytest across all slices
+#   make bench KERNEL=x      # benchmark one slice   (make bench-all for every slice)
+#   make nsys  KERNEL=x      # timeline profile      (Nsight Systems)
+#   make ncu   KERNEL=x      # hardware counters     (Nsight Compute; see docs/profiling.md)
+#   make sanitize KERNEL=x   # compute-sanitizer memcheck + racecheck
+#   make clean
 #
-# Profiling and run targets honor KERNEL, e.g.  make ncu KERNEL=vector_add
-# On a shared box, pick a free GPU with GPU=, e.g.  make run GPU=1
-# Lighten ncu's impact on shared GPUs with NCU_SET=basic (default: full).
-#
-#   make sanitize KERNEL=k   # compute-sanitizer memcheck + racecheck
-#   make torch-test          # pytest correctness for the torch_ext ops
-#   make bench               # run the benchmark scaffold
+# On a shared box pick a free GPU with GPU=, e.g. make run GPU=1.
 # Set FASTMATH=1 to append --use_fast_math (A/B the rsqrt path without editing source).
 
 VENV    ?= .venv/bin
@@ -22,10 +19,6 @@ NVCC    ?= $(CUDA_TK)/bin/nvcc
 # 'native' needs CUDA >= 11.5; override for cross-compiles, e.g. ARCH=sm_90.
 ARCH    ?= native
 NVFLAGS ?= -O2 -std=c++17 -arch=$(ARCH)
-# The toolkit wheels put libcudart under lib/ (not the lib64/ nvcc probes by
-# default), so point the linker and the runtime loader at it -- otherwise the
-# link fails or the binary picks up the stale system CUDA 11 runtime.
-NVLDFLAGS ?= -L $(CUDA_TK)/lib -Xlinker -rpath=$(CUDA_TK)/lib
 FASTMATH ?=
 ifeq ($(FASTMATH),1)
 NVFLAGS += --use_fast_math
@@ -40,66 +33,72 @@ GPU_ENV := CUDA_VISIBLE_DEVICES=$(GPU)
 # GPU); 'full' collects everything but replays kernels many times.
 NCU_SET ?= full
 
-# Nsight and compute-sanitizer are not pip-installable; they come from a system
-# CUDA install. Override if they live outside PATH, e.g. NCU=/opt/nvidia/.../ncu.
+# Nsight and compute-sanitizer are not pip-installable; they come from the
+# system CUDA install. Override if they live outside PATH.
 NSYS      ?= nsys
 NCU       ?= ncu
 SANITIZER ?= compute-sanitizer
 
-SRC_DIR := src
-BIN_DIR := bin
+KERNEL_DIR := kernels
+BIN_DIR    := bin
 
-# One binary per .cu file in src/.
-SOURCES := $(wildcard $(SRC_DIR)/*.cu)
-TARGETS := $(patsubst $(SRC_DIR)/%.cu,$(BIN_DIR)/%,$(SOURCES))
-# Rebuild a binary when any shared header changes.
-HEADERS := $(wildcard $(SRC_DIR)/*.cuh)
+# One binary per kernels/<name>/main.cu.
+SOURCES := $(wildcard $(KERNEL_DIR)/*/main.cu)
+TARGETS := $(patsubst $(KERNEL_DIR)/%/main.cu,$(BIN_DIR)/%,$(SOURCES))
+# Rebuild when any shared or per-slice header changes.
+HEADERS := $(wildcard $(KERNEL_DIR)/*/*.cuh) $(wildcard $(KERNEL_DIR)/_common/*.cuh)
 
 # Fail early with an actionable message when an external tool is missing,
 # instead of letting the recipe die on a cryptic "command not found".
 require = @command -v $(1) >/dev/null 2>&1 || { echo "error: '$(1)' not found on PATH -- install it or pass $(2)=/path/to/tool"; exit 1; }
 
-.PHONY: all run nsys ncu sanitize torch-test bench clean
+PY_ENV := PATH="$(CURDIR)/$(VENV):$$PATH" CUDA_HOME="$(CUDA_TK)"
+
+.PHONY: all run test bench bench-all nsys ncu sanitize clean
 
 all: $(TARGETS)
 
-$(BIN_DIR)/%: $(SRC_DIR)/%.cu $(HEADERS) | $(BIN_DIR)
-	$(NVCC) $(NVFLAGS) $(PROFFLAGS) $(NVLDFLAGS) $< -o $@
+$(BIN_DIR)/%: $(KERNEL_DIR)/%/main.cu $(HEADERS) | $(BIN_DIR)
+	$(NVCC) $(NVFLAGS) $(PROFFLAGS) $< -o $@
 
 $(BIN_DIR):
 	mkdir -p $(BIN_DIR)
 
-# Build and run the chosen kernel.
-run: $(BIN_DIR)/${KERNEL}
-	$(GPU_ENV) ./$(BIN_DIR)/${KERNEL}
+# Build and run the chosen driver. Each one self-checks and self-benchmarks.
+run: $(BIN_DIR)/$(KERNEL)
+	$(GPU_ENV) ./$(BIN_DIR)/$(KERNEL)
 
-# Timeline profile: where does time go (kernels vs. copies vs. gaps)?
-nsys: $(BIN_DIR)/${KERNEL}
-	$(call require,$(NSYS),NSYS)
-	$(GPU_ENV) $(NSYS) profile --stats=true --force-overwrite=true \
-		-o $(BIN_DIR)/${KERNEL}.nsys ./$(BIN_DIR)/${KERNEL}
-
-# Per-kernel hardware profile: why is this kernel slow? Full section set,
-# one launch of the named kernel, skipping the warm-up launch.
-ncu: $(BIN_DIR)/${KERNEL}
-	$(call require,$(NCU),NCU)
-	$(GPU_ENV) $(NCU) --set $(NCU_SET) -k "regex:${KERNEL}" --launch-skip 1 -c 1 -f \
-		-o $(BIN_DIR)/${KERNEL}.ncu ./$(BIN_DIR)/${KERNEL}
-
-# Correctness / race checks — valuable for reduction kernels with shared memory.
-sanitize: $(BIN_DIR)/${KERNEL}
-	$(call require,$(SANITIZER),SANITIZER)
-	$(GPU_ENV) $(SANITIZER) --tool memcheck  ./$(BIN_DIR)/${KERNEL}
-	$(GPU_ENV) $(SANITIZER) --tool racecheck ./$(BIN_DIR)/${KERNEL}
-
-# PyTorch-extension surface (built out-of-tree by torch.utils.cpp_extension.load).
-TORCH_ENV := PATH="$(CURDIR)/$(VENV):$$PATH" CUDA_HOME="$(CUDA_TK)"
-
-torch-test:
-	$(GPU_ENV) $(TORCH_ENV) $(VENV)/pytest -q tests/
+# Correctness across every slice (skips cleanly when no GPU is present).
+test:
+	$(GPU_ENV) $(PY_ENV) $(VENV)/pytest -q $(KERNEL_DIR)/
 
 bench:
-	$(GPU_ENV) $(TORCH_ENV) $(VENV)/python bench/bench_rmsnorm.py
+	$(GPU_ENV) $(PY_ENV) $(VENV)/python $(KERNEL_DIR)/$(KERNEL)/bench.py
+
+bench-all:
+	@for b in $(wildcard $(KERNEL_DIR)/*/bench.py); do \
+		echo "=== $$b ==="; $(GPU_ENV) $(PY_ENV) $(VENV)/python $$b || exit 1; \
+	done
+
+# Timeline profile: where does time go (kernels vs. copies vs. gaps)?
+# Works without elevated privileges, unlike ncu's counters.
+nsys: $(BIN_DIR)/$(KERNEL)
+	$(call require,$(NSYS),NSYS)
+	$(GPU_ENV) $(NSYS) profile --stats=true --force-overwrite=true \
+		-o $(BIN_DIR)/$(KERNEL).nsys ./$(BIN_DIR)/$(KERNEL)
+
+# Per-kernel hardware counters: why is this kernel slow? Needs permission to
+# read GPU performance counters -- see docs/profiling.md if this errors.
+ncu: $(BIN_DIR)/$(KERNEL)
+	$(call require,$(NCU),NCU)
+	$(GPU_ENV) $(NCU) --set $(NCU_SET) -k "regex:$(KERNEL)" --launch-skip 1 -c 1 -f \
+		-o $(BIN_DIR)/$(KERNEL).ncu ./$(BIN_DIR)/$(KERNEL)
+
+# Correctness / race checks -- valuable for reduction kernels with shared memory.
+sanitize: $(BIN_DIR)/$(KERNEL)
+	$(call require,$(SANITIZER),SANITIZER)
+	$(GPU_ENV) $(SANITIZER) --tool memcheck  ./$(BIN_DIR)/$(KERNEL)
+	$(GPU_ENV) $(SANITIZER) --tool racecheck ./$(BIN_DIR)/$(KERNEL)
 
 clean:
 	rm -rf $(BIN_DIR)

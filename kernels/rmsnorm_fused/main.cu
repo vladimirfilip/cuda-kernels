@@ -16,7 +16,7 @@
 #include <string>
 #include <vector>
 
-#include "rmsnorm_fused.cuh"
+#include "kernel.cuh"
 
 namespace {
 
@@ -24,8 +24,9 @@ namespace {
 constexpr int kDefaultN = 4096;
 constexpr int kDefaultH = 2048;
 constexpr int kDefaultIters = 200;
-// RTX 5090 spec HBM bandwidth (~1.79 TB/s); override via argv[4].
-constexpr double kDefaultPeakGbps = 1790.0;
+// RTX 4070 Ti spec HBM bandwidth: 21 Gbps GDDR6X on a 192-bit bus = 504 GB/s.
+// Override via argv[4] on other hardware.
+constexpr double kDefaultPeakGbps = 504.0;
 
 // Worst assert_close-style violation ratio: max |got - ref| / (atol + rtol|ref|).
 // <= 1.0 means every element is within tolerance. Using a combined atol+rtol
@@ -60,10 +61,10 @@ void rmsnorm_ref(const std::vector<double> &x, const std::vector<double> &res,
 }
 
 template <typename T>
-int run_dtype(const char *tag, const std::vector<double> &hx,
-              const std::vector<double> &hres, const std::vector<double> &hw,
-              int N, int H, float eps, int iters, double peak_gbps, double atol,
-              double rtol) {
+int run_dtype(const char *tag, RmsNormVariant variant,
+              const std::vector<double> &hx, const std::vector<double> &hres,
+              const std::vector<double> &hw, int N, int H, float eps, int iters,
+              double peak_gbps, double atol, double rtol) {
     const size_t n = (size_t)N * H;
     std::vector<T> hx_t(n), hres_t(n), hw_t(H), hh_t(n), hout_t(n);
     // Quantize inputs to T, then build the reference from those same quantized
@@ -93,7 +94,7 @@ int run_dtype(const char *tag, const std::vector<double> &hx,
     CUDA_CHECK(cudaMemcpy(dw, hw_t.data(), H * sizeof(T), cudaMemcpyHostToDevice));
 
     // Warm-up (pays one-time JIT/context costs; profile with --launch-skip 1).
-    launch_rmsnorm_fused<T>(dx, dres, dw, dh, dout, N, H, eps);
+    launch_rmsnorm_fused<T>(dx, dres, dw, dh, dout, N, H, eps, 0, variant);
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
 
@@ -102,7 +103,7 @@ int run_dtype(const char *tag, const std::vector<double> &hx,
     CUDA_CHECK(cudaEventCreate(&stop));
     CUDA_CHECK(cudaEventRecord(start));
     for (int it = 0; it < iters; ++it)
-        launch_rmsnorm_fused<T>(dx, dres, dw, dh, dout, N, H, eps);
+        launch_rmsnorm_fused<T>(dx, dres, dw, dh, dout, N, H, eps, 0, variant);
     CUDA_CHECK(cudaEventRecord(stop));
     CUDA_CHECK(cudaEventSynchronize(stop));
     CUDA_CHECK(cudaGetLastError());
@@ -127,10 +128,9 @@ int run_dtype(const char *tag, const std::vector<double> &hx,
     const double r_out = worst_ratio<T>(hout_t, ref_out, atol, rtol);
     const bool ok = r_h <= 1.0 && r_out <= 1.0;
 
-    printf("[%-4s] %.4f ms/launch  %.1f GB/s  (%.1f%% of %.0f GB/s peak)\n", tag,
-           ms, gbps, 100.0 * gbps / peak_gbps, peak_gbps);
-    printf("[%-4s] tol ratio (<=1 ok): h=%.2f out=%.2f  (atol=%.1e rtol=%.1e)  %s\n",
-           tag, r_h, r_out, atol, rtol, ok ? "OK" : "FAIL");
+    printf("%-4s %-9s %9.4f %8.1f %7.1f%%   %5.2f %5.2f   %s\n", tag,
+           variant_name(variant), ms, gbps, 100.0 * gbps / peak_gbps, r_h, r_out,
+           ok ? "OK" : "FAIL");
     return ok ? 0 : 1;
 }
 
@@ -154,10 +154,26 @@ int main(int argc, char **argv) {
     for (int j = 0; j < H; ++j)
         hw[j] = 0.5 + (double)rand() / RAND_MAX;
 
+    // Traffic lower bound: read x + residual, write h + out.
+    const double fp32_mb = 4.0 * n * sizeof(float) / 1.0e6;
+    printf("traffic %.1f MB (fp32) -- %s\n", fp32_mb,
+           fp32_mb < 48.0 ? "FITS IN L2, not an HBM measurement"
+                          : "exceeds L2, HBM-bound");
+    printf("peak %.0f GB/s\n\n", peak_gbps);
+    printf("%-4s %-9s %9s %8s %8s   %11s   %s\n", "type", "variant",
+           "ms/launch", "GB/s", "%peak", "tol h / out", "");
+    printf("%s\n", "----------------------------------------------------------------------");
+
+    const RmsNormVariant ladder[] = {RmsNormVariant::kV0Thread,
+                                     RmsNormVariant::kV1Warp,
+                                     RmsNormVariant::kV2Block};
     int rc = 0;
-    rc |= run_dtype<float>("fp32", hx, hres, hw, N, H, eps, iters, peak_gbps,
-                           1e-4, 1e-4);
-    rc |= run_dtype<__nv_bfloat16>("bf16", hx, hres, hw, N, H, eps, iters,
-                                   peak_gbps, 5e-3, 2e-2);
+    for (auto v : ladder)
+        rc |= run_dtype<float>("fp32", v, hx, hres, hw, N, H, eps, iters,
+                               peak_gbps, 1e-4, 1e-4);
+    printf("\n");
+    for (auto v : ladder)
+        rc |= run_dtype<__nv_bfloat16>("bf16", v, hx, hres, hw, N, H, eps, iters,
+                                       peak_gbps, 5e-3, 2e-2);
     return rc == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cuda-kernels"
+version = "0.1.0"
+description = "CUDA and Triton kernels with correctness tests and benchmarks"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.7",
+    "triton>=3.2",
+    "ninja",       # parallel builds for torch.utils.cpp_extension.load
+    "numpy",
+    "pandas",
+    "matplotlib",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff", "jupyter", "nbclient", "nbformat"]
+
+[tool.setuptools.packages.find]
+include = ["kernels*"]
+
+# The .cu/.cuh sources are compiled at import time by torch.utils.cpp_extension,
+# so they have to ship with the package rather than being build-time only.
+[tool.setuptools.package-data]
+"*" = ["*.cu", "*.cuh"]
+
+[tool.pytest.ini_options]
+testpaths = ["kernels"]
+# Each slice keeps its own test file next to the kernel it covers.
+python_files = ["test_*.py"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+# Explicit rather than inherited, so a ruff upgrade cannot silently change what
+# CI enforces. E/F are the correctness core; B catches real closure and mutable
+# -default traps; I keeps imports ordered.
+select = ["E4", "E7", "E9", "F", "B", "I", "RUF"]
+# C408 (dict(...) over {...}) and DTZ005 (tz-naive datetime) are deliberate:
+# dict(...) reads better for the benchmark row records, and the timestamps are
+# local-time filename stamps, not instants that cross a timezone.
+ignore = ["C408", "DTZ005"]
+
+[tool.ruff.lint.per-file-ignores]
+# Notebooks legitimately re-bind display names across cells.
+"*.ipynb" = ["E402"]
+# E741 flags `O` as ambiguous. Q, K, V, O, L, m, l is the notation of the
+# FlashAttention paper, and matching it makes the kernel checkable against the
+# algorithm it implements. Renaming to `out` would be worse.
+"kernels/flash_attention/kernel.py" = ["E741"]
