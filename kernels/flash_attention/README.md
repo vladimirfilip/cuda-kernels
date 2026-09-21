@@ -43,24 +43,27 @@ full row. `m` and `l` are always fp32, even when Q/K/V are fp16.
 
 ## Performance
 
-RTX 4070 Ti, fp16, head_dim 64, from `make bench KERNEL=flash_attention`. `sdpa`
+RTX 5070, fp16, head_dim 64, from `make bench KERNEL=flash_attention`. `sdpa`
 is `F.scaled_dot_product_attention`; for fp16/bf16 inputs it dispatches to the
 FlashAttention CUDA kernels. `naive` materialises the full score matrix.
 
 | shape | causal | sdpa | naive | flash | vs sdpa | vs naive |
 |-------|--------|------|-------|-------|---------|----------|
-| B2 H8 N2048 | no | 0.339 ms | 2.221 ms | 0.531 ms | 0.64x | 4.2x |
-| B1 H8 N4096 | no | 0.602 ms | 4.226 ms | 0.868 ms | 0.69x | 4.9x |
-| B2 H8 N2048 | yes | 0.242 ms | 3.567 ms | 0.404 ms | 0.60x | 8.8x |
-| B1 H8 N4096 | yes | 0.408 ms | 7.042 ms | 0.590 ms | 0.69x | 11.9x |
+| B2 H8 N2048 | no | 0.510 ms | 1.920 ms | 0.662 ms | 0.77x | 2.9x |
+| B1 H8 N4096 | no | 0.956 ms | 4.532 ms | 1.165 ms | 0.82x | 3.9x |
+| B2 H8 N2048 | yes | 0.340 ms | 3.333 ms | 0.482 ms | 0.71x | 6.9x |
+| B1 H8 N4096 | yes | 0.582 ms | 7.200 ms | 0.777 ms | 0.75x | 9.3x |
 
-At N=4096 that is 39.6 TFLOP/s against SDPA's 57.1, about 69% of the hand-tuned
-CUDA implementation and 4.9-11.9x over naive. SDPA uses hand-tuned CUTLASS
+At N=4096 non-causal that is 29.5 TFLOP/s against SDPA's 35.9, about 82% of the
+hand-tuned CUDA implementation and 2.9-9.3x over naive. SDPA uses hand-tuned CUTLASS
 kernels with per-architecture tile tuning, and its backward is fused where this
 one is not.
 
 Below N~1024 the small cells are launch-overhead bound: the kernel still beats
-naive by roughly 1.5x but trails SDPA at every size in the sweep. See
+naive by roughly 1.5-2x but trails SDPA at every size in the sweep. In fp32 the
+fused Triton kernel is slower than naive from N=512 up (0.55-0.58x of SDPA against
+naive's 0.71-0.79x, non-causal); the tile schedule for IEEE fp32 costs more than
+the avoided N x N traffic saves at these sizes. See
 [`latency_benchmark.ipynb`](latency_benchmark.ipynb).
 
 ## Precision

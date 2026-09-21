@@ -12,7 +12,7 @@ between. Fusing them into one pass removes that round trip. Both `h` and `out`
 are written (`h` is the residual stream the next block reads), so the fused op's
 traffic is `4 * N * H * sizeof(T)`: read `x` and `residual`, write `h` and `out`.
 
-That makes this memory bound, with a hard target of DRAM bandwidth, 504 GB/s on
+That makes this memory bound, with a hard target of DRAM bandwidth, 672 GB/s on
 the reference card. There is no arithmetic to optimize, only the memory access
 pattern.
 
@@ -37,28 +37,28 @@ bf16, both past the 48 MB L2, so `%peak` refers to DRAM.
 
 | rung | strategy | fp32 ms | fp32 %peak | bf16 ms | bf16 %peak |
 |------|----------|---------|-----------|---------|-----------|
-| v0 | one thread per row, scalar loop | 1.1347 | 23.5% | 1.4130 | 9.4% |
-| v1 | one warp per row, `__shfl_down_sync` reduction | 0.3272 | 81.4% | 0.1420 | 93.7% |
-| v2 | one block per row, shared-mem cross-warp reduction | 0.3139 | 84.8% | 0.1553 | 85.7% |
+| v0 | one thread per row, scalar loop | 1.6101 | 12.4% | 2.4480 | 4.1% |
+| v1 | one warp per row, `__shfl_down_sync` reduction | 0.2451 | 81.5% | 0.1033 | 96.7% |
+| v2 | one block per row, shared-mem cross-warp reduction | 0.2417 | 82.6% | 0.1905 | 52.4% |
 
-**v0 to v1 is the main result.** A 3.5x fp32 speedup comes from changing which
+**v0 to v1 is the main result.** A 6.6x fp32 speedup comes from changing which
 thread reads which address, not from doing less work. In v0, thread `i` owns row
 `i`, so the 32 lanes of a warp read addresses `H` floats apart and every lane
 needs its own memory transaction. In v1 the warp cooperates on one row and walks
 it together, so the same 32 loads coalesce into a handful of transactions. The
 arithmetic is identical.
 
-The bf16 numbers show the same effect. In v0, bf16 is slower than fp32 (1.41 ms
-vs 1.13 ms) despite moving half the bytes: halving the payload buys nothing when
+The bf16 numbers show the same effect. In v0, bf16 is slower than fp32 (2.45 ms
+vs 1.61 ms) despite moving half the bytes: halving the payload buys nothing when
 every access is already a separate transaction. Once the accesses coalesce in v1,
-bf16 lands at 93.7% of peak.
+bf16 lands at 96.7% of peak.
 
 **v2 is not a clean win.** Assigning a whole block per row adds a
-`__syncthreads`-mediated reduction across warps. That pays off in fp32 (84.8% vs
-81.4%) where a row is wide enough to keep several warps busy, and costs in bf16
-(85.7% vs 93.7%) where the extra synchronisation outweighs the extra parallelism.
-At H=2048 the crossover sits between the two dtypes. The launcher defaults to v2;
-`launch_rmsnorm_fused(..., RmsNormVariant::kV1Warp)` selects otherwise.
+`__syncthreads`-mediated reduction across warps. In fp32 it is a wash (82.6% vs
+81.5%). In bf16 it costs nearly half the bandwidth (52.4% vs 96.7%): a bf16 row at
+H=2048 is 4 KB, too little work to amortise the extra synchronisation. The launcher
+defaults to v2, so the PyTorch op inherits that bf16 penalty;
+`launch_rmsnorm_fused(..., RmsNormVariant::kV1Warp)` selects the faster rung.
 
 ## Against PyTorch
 
@@ -67,12 +67,14 @@ From `make bench KERNEL=rmsnorm_fused`, at the large end of the sweep
 
 | variant | fp32 ms | bf16 ms | what it is |
 |---------|---------|---------|------------|
-| `unfused` | 6.3253 | 3.2339 | `x + residual` then `F.rms_norm`, the baseline |
-| `fused` | 5.0239 | 2.5252 | one kernel |
-| `norm` | 2.6782 | 1.3412 | `F.rms_norm` alone on a precomputed `h`, a lower bound |
+| `unfused` | 4.6265 | 2.3105 | `x + residual` then `F.rms_norm`, the baseline |
+| `fused` | 3.7829 | 2.5255 | one kernel |
+| `norm` | 1.9084 | 0.9678 | `F.rms_norm` alone on a precomputed `h`, a lower bound |
 
-The fused kernel is 1.26x (fp32) / 1.28x (bf16) faster than the unfused PyTorch
-pair and sustains ~85% of DRAM bandwidth. `norm` sets the floor for any kernel
+The fused kernel is 1.22x faster than the unfused PyTorch pair in fp32 and sustains
+84.5% of DRAM bandwidth. In bf16 it is 0.91x, i.e. slower (63.3% of peak), across
+the whole sweep (0.55-0.91x): the default v2 launch shape is the cause, see the
+ladder above. `norm` sets the floor for any kernel
 that also writes the residual stream: it skips the add and never writes `h`, so
 it moves half the bytes.
 
@@ -86,7 +88,7 @@ including `H = 4097` (not a multiple of any vector width) and a single-token
 `N = 1`, at two eps values. The standalone driver checks every rung against an
 fp64 CPU reference on each run and exits non-zero on mismatch.
 
-## The remaining 15%
+## The remaining 15% (fp32)
 
 The kernel does two passes over each row: one to accumulate the sum of squares,
 one to scale and write. The second pass re-reads `h`, which it just wrote. The

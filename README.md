@@ -5,17 +5,18 @@ higher-precision reference and a benchmark against the PyTorch path. `vector_add
 is the exception and exists only to show the measurement harness.
 
 All numbers below were measured on the reference machine in
-[`docs/profiling.md`](docs/profiling.md): RTX 4070 Ti (`sm_89`, 504 GB/s GDDR6X,
+[`docs/profiling.md`](docs/profiling.md): RTX 5070 (`sm_120`, 672 GB/s GDDR7,
 48 MB L2), CUDA 13.0, PyTorch 2.14, Triton 3.8. They reproduce with the commands
-shown. Raw CSVs are in [`results/`](results/).
+shown plus the peak overrides listed in that file. Raw CSVs are in
+[`results/`](results/).
 
 ## Kernels
 
 | kernel | language | result | write-up |
 |--------|----------|--------|----------|
-| Fused RMSNorm + residual | CUDA | 1.28x over the PyTorch pair, 85% of DRAM peak | [read](kernels/rmsnorm_fused/) |
-| FlashAttention-2 | Triton | 69% of PyTorch SDPA, 4.9-11.9x over naive, O(N) forward memory | [read](kernels/flash_attention/) |
-| Matmul (naive to tiled) | CUDA | 1.30x over naive; 8% of peak vs cuBLAS 68% | [read](kernels/matmul/) |
+| Fused RMSNorm + residual | CUDA | fp32: 1.22x over the PyTorch pair at 84% of DRAM peak; bf16: 0.91x, slower | [read](kernels/rmsnorm_fused/) |
+| FlashAttention-2 | Triton | 82% of PyTorch SDPA, 2.9-9.3x over naive, O(N) forward memory | [read](kernels/flash_attention/) |
+| Matmul (naive to tiled) | CUDA | 1.36x over naive; 6% of peak vs cuBLAS 50% | [read](kernels/matmul/) |
 | Vector add | CUDA | measurement harness and the L2 benchmarking trap | [read](kernels/vector_add/) |
 
 Each directory holds what applies to that kernel: device code, PyTorch binding,
@@ -49,11 +50,11 @@ on mismatch, so `make run` doubles as a smoke test.
 
 ## Notes
 
-**RMSNorm: coalescing is worth 3.5x.** Moving from one thread per row to one warp
-per row takes fp32 from 23.5% to 81.4% of DRAM bandwidth with no change to the
-arithmetic, only which thread touches which address. One block per row helps fp32
-(84.8%) but hurts bf16 (85.7% vs 93.7%): the cross-warp reduction costs more than
-the added parallelism buys. [Details](kernels/rmsnorm_fused/)
+**RMSNorm: coalescing is worth 6.6x.** Moving from one thread per row to one warp
+per row takes fp32 from 12.4% to 81.5% of DRAM bandwidth with no change to the
+arithmetic, only which thread touches which address. One block per row barely moves fp32
+(82.6% vs 81.5%) and hurts bf16 badly (52.4% vs 96.7%): the cross-warp reduction
+costs more than the added parallelism buys. [Details](kernels/rmsnorm_fused/)
 
 **FlashAttention: Triton's `tl.dot` runs fp32 on TF32 tensor cores by default.**
 Against an fp64 reference the default was 2.3e-03, versus PyTorch fp32 SDPA at
@@ -62,7 +63,7 @@ shared-memory use, so the tile schedule depends on dtype.
 [Details](kernels/flash_attention/)
 
 **Benchmarks that fit in L2 measure L2.** This card has 48 MB. `vector_add` on a
-12 MB working set reports 2217 GB/s, 440% of the card's bandwidth, because the
+12 MB working set reports 1518 GB/s, 226% of the card's bandwidth, because the
 traffic never reaches DRAM. The rmsnorm CSV carries `footprint_mb` and
 `l2_resident` columns so an L2-resident row is labelled rather than left to
 inflate the result.

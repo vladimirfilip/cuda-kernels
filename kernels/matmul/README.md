@@ -36,8 +36,8 @@ From `make run KERNEL=matmul` (M=1024, K=768, N=512):
 
 | variant | ms/launch | GFLOP/s | vs naive |
 |---------|-----------|---------|----------|
-| naive | 0.3263 | 2468 | 1.00x |
-| tiled | 0.2518 | 3198 | 1.30x |
+| naive | 0.5887 | 1368 | 1.00x |
+| tiled | 0.4344 | 1854 | 1.36x |
 
 ## Against cuBLAS
 
@@ -45,14 +45,14 @@ From `make run KERNEL=matmul` (M=1024, K=768, N=512):
 
 | M=K=N | cuBLAS | tiled | tiled %peak | ratio |
 |-------|--------|-------|-------------|-------|
-| 512 | 2078 GFLOP/s | 2114 GFLOP/s | 5.3% | 1.02x |
-| 1024 | 13190 | 3061 | 7.6% | 0.23x |
-| 2048 | 24538 | 3303 | 8.2% | 0.14x |
-| 4096 | 27120 | 3283 | 8.2% | 0.12x |
+| 512 | 3053 GFLOP/s | 1499 GFLOP/s | 4.9% | 0.49x |
+| 1024 | 10199 | 1824 | 5.9% | 0.18x |
+| 2048 | 15198 | 1880 | 6.1% | 0.12x |
+| 4096 | 15351 | 1904 | 6.2% | 0.12x |
 
-The tiled kernel is flat at ~3.3 TFLOP/s, 8% of the card's 40 TFLOP/s fp32 peak.
-cuBLAS scales to 27 TFLOP/s (68%). At 512^3 the two are level; cuBLAS pulls away
-as size grows.
+The tiled kernel is flat at ~1.9 TFLOP/s, 6% of the card's 31 TFLOP/s fp32 peak.
+cuBLAS scales to 15.4 TFLOP/s (50%). cuBLAS is already 2x ahead at 512^3 and pulls
+away as size grows.
 
 The gap is structural. A 16x16 tile with one output per thread gives each thread
 one fused multiply-add per two shared-memory loads, so the kernel is bound by
