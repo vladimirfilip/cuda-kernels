@@ -88,15 +88,25 @@ including `H = 4097` (not a multiple of any vector width) and a single-token
 `N = 1`, at two eps values. The standalone driver checks every rung against an
 fp64 CPU reference on each run and exits non-zero on mismatch.
 
-## The remaining 15% (fp32)
+## The remaining gap (fp32)
 
 The kernel does two passes over each row: one to accumulate the sum of squares,
 one to scale and write. The second pass re-reads `h`, which it just wrote. The
-roofline model does not charge for that read; it is served by L2 at these sizes
-but still costs latency. The next rungs would be 128-bit vectorized loads
-(`float4` / `__nv_bfloat162`) and caching the row in registers across both passes
-to eliminate the re-read. Neither is implemented yet.
+roofline model does not charge for that read on the assumption that it is served
+by L2 rather than DRAM.
 
-Attributing that gap precisely needs Nsight Compute's memory-throughput section,
-blocked on this box by a driver setting. See
-[`docs/profiling.md`](../../docs/profiling.md).
+Nsight Compute on the default v2 kernel (N=4096, H=2048, fp32) says that
+assumption does not hold here: `lts__t_sector_hit_rate.pct` (L2 hit rate) is
+0.39%, so the re-read is landing in DRAM almost every time, not L2. Achieved
+occupancy is 65.4% against a 66.7% ceiling set by warps per block -- occupancy
+is not the bottleneck. `dram__bytes.sum.per_second` reads 540 GB/s, consistent
+with the re-read actually costing full DRAM bandwidth rather than being free.
+The next rungs would be 128-bit vectorized loads (`float4` / `__nv_bfloat162`)
+and caching the row in registers across both passes to eliminate the re-read
+outright rather than hope L2 absorbs it. Neither is implemented yet.
+
+Commands: `make ncu KERNEL=rmsnorm_fused` runs the full section set; see
+[`docs/profiling.md`](../../docs/profiling.md) for the two setup steps this box
+needed (`ncu` is a separate apt package from the rest of the toolkit, and isn't
+on `PATH` by default) and for how the overhead this adds compares to a normal
+run.

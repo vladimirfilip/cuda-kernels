@@ -86,10 +86,11 @@ make test        # 78 cases
 
 ## Profiling
 
-`nsys` and `compute-sanitizer` work on the reference box. `ncu` is installed but
-its hardware counters are blocked by `RmProfilingAdminOnly: 1` with no
-passwordless sudo, so counter-based analysis is unavailable there. See
-[`docs/profiling.md`](docs/profiling.md).
+`nsys`, `ncu` and `compute-sanitizer` all work on the reference box. `ncu`'s
+hardware counters need `RmProfilingAdminOnly: 1`'s root requirement, which the
+box's own shell already satisfies; see [`docs/profiling.md`](docs/profiling.md)
+for the two non-obvious steps (a separate package, and a `PATH` entry) and for
+what those counters found in the rmsnorm write-up.
 
 ## License
 

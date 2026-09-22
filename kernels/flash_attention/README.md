@@ -75,10 +75,10 @@ decimal digits. Measured against an fp64 reference at (1,1,128,64) causal:
 |---------------|--------------|
 | default (TF32) | 2.3e-03 |
 | `input_precision="ieee"` | 4.0e-07 |
-| PyTorch SDPA fp32, for scale | 6.5e-07 |
+| PyTorch SDPA fp32, for scale | 5.5e-07 |
 
-The default is 3500x worse than SDPA and fails any test written to a real fp32
-tolerance. The kernel requests `ieee` for fp32 and keeps tensor cores for
+The default is roughly 4200x worse than SDPA and fails any test written to a real
+fp32 tolerance. The kernel requests `ieee` for fp32 and keeps tensor cores for
 fp16/bf16.
 
 IEEE fp32 makes Triton emit a multi-pass emulation instead of one tensor-core op,

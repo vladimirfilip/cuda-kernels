@@ -40,17 +40,16 @@ make nsys KERNEL=vector_add
 The `cuda_gpu_kern_sum` table gives mean/median kernel duration directly, enough
 to fill in an optimization ladder without counters.
 
-## Nsight Compute: blocked on this box
+## Nsight Compute
 
-`make ncu KERNEL=<name>` fails here:
+`make ncu KERNEL=<name>` needs a driver permission it does not have by default:
 
 ```
 ==ERROR== ERR_NVGPUCTRPERM - The user does not have permission to access
 NVIDIA GPU Performance Counters on the target device 0.
 ```
 
-`ncu` is installed at `/usr/local/cuda/bin/ncu` and connects to the process. The
-block is a driver setting:
+The block is a driver setting:
 
 ```console
 $ cat /proc/driver/nvidia/params | grep RmProfilingAdminOnly
@@ -58,18 +57,41 @@ RmProfilingAdminOnly: 1
 ```
 
 With `RmProfilingAdminOnly: 1`, reading hardware performance counters requires
-root. There is no passwordless sudo on this box. Any of these fixes it:
+root. This box's shell runs as root already, so it works with no `sudo` and no
+password. Two things trip it up regardless:
 
-- run the target as root (`sudo -E make ncu KERNEL=...`), with the password;
+- `cuda-nsight-compute-13-0` is a separate apt package from the base CUDA
+  toolkit; installing `cuda-nvcc-13-0` etc. does not pull `ncu` in. It puts the
+  binary at `/usr/local/cuda/bin/ncu`.
+- that directory is not on `PATH` by default (the `Makefile` calls `nvcc` by
+  absolute path via `CUDA_HOME`, so this only bites `ncu`). Either add it to
+  `PATH` or `make ncu KERNEL=... NCU=/usr/local/cuda/bin/ncu`.
+
+On a box without root, `sudo -E make ncu KERNEL=...` works if passwordless sudo
+is set up; otherwise:
+
 - set `NVreg_RestrictProfilingToAdminUsers=0` in `/etc/modprobe.d/nvidia.conf`
   and reload the driver (needs host access, not available inside a container);
 - profile on a machine where the host has already done so.
 
 `ncu` serialises and replays kernels to collect counters, so timings taken under
-`ncu` are not comparable to normal runs. On this box `vector_add` reports 0.51
-ms/launch under `ncu` and 0.0060 ms/launch without it, ~84x instrumentation
-overhead. Use `ncu` for counters and stall reasons, CUDA events or `nsys` for
+`ncu` are not comparable to normal runs, and the size of the effect depends on
+the section set. On this box, with `NCU_SET=full` (the default), `vector_add`
+reports 25.73 ms/launch under `ncu` for the row it captures and 0.0047 ms/launch
+without it, ~5500x instrumentation overhead -- much worse than a quick sanity
+check would suggest, because `full` replays every pass the section set needs.
+`NCU_SET=basic` is far cheaper (9 passes vs. 39 here) at the cost of fewer
+metrics. Use `ncu` for counters and stall reasons, CUDA events or `nsys` for
 time.
+
+As a concrete example, `make ncu KERNEL=rmsnorm_fused` on the default (v2,
+block-per-row) fp32 kernel at N=4096 H=2048 shows why the [fused RMSNorm
+write-up](../kernels/rmsnorm_fused/README.md#the-remaining-gap-fp32)'s "L2 serves
+the re-read" claim does not hold here: `lts__t_sector_hit_rate.pct` (L2 hit rate)
+is 0.39%, not the near-100% a cached re-read would need. Achieved occupancy is
+65.4% against a 66.7% theoretical ceiling set by warps per block, and
+`dram__bytes.sum.per_second` reads 540 GB/s -- essentially all of this kernel's
+traffic is going to DRAM, including the re-read.
 
 ## compute-sanitizer
 
