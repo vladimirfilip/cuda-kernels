@@ -86,11 +86,9 @@ make test        # 78 cases
 
 ## Profiling
 
-`nsys`, `ncu` and `compute-sanitizer` all work on the reference box. `ncu`'s
-hardware counters need `RmProfilingAdminOnly: 1`'s root requirement, which the
-box's own shell already satisfies; see [`docs/profiling.md`](docs/profiling.md)
-for the two non-obvious steps (a separate package, and a `PATH` entry) and for
-what those counters found in the rmsnorm write-up.
+`nsys`, `ncu` and `compute-sanitizer` all work on the reference machine. See
+[`docs/profiling.md`](docs/profiling.md) for what each tool needs and what
+`ncu`'s counters found in the rmsnorm write-up.
 
 ## License
 

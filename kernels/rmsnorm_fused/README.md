@@ -105,8 +105,6 @@ The next rungs would be 128-bit vectorized loads (`float4` / `__nv_bfloat162`)
 and caching the row in registers across both passes to eliminate the re-read
 outright rather than hope L2 absorbs it. Neither is implemented yet.
 
-Commands: `make ncu KERNEL=rmsnorm_fused` runs the full section set; see
-[`docs/profiling.md`](../../docs/profiling.md) for the two setup steps this box
-needed (`ncu` is a separate apt package from the rest of the toolkit, and isn't
-on `PATH` by default) and for how the overhead this adds compares to a normal
-run.
+`make ncu KERNEL=rmsnorm_fused` runs the full section set; see
+[`docs/profiling.md`](../../docs/profiling.md) for what that costs against a
+normal run.
