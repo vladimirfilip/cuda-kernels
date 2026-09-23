@@ -166,7 +166,8 @@ int main(int argc, char **argv) {
 
     const RmsNormVariant ladder[] = {RmsNormVariant::kV0Thread,
                                      RmsNormVariant::kV1Warp,
-                                     RmsNormVariant::kV2Block};
+                                     RmsNormVariant::kV2Block,
+                                     RmsNormVariant::kV3Vector};
     int rc = 0;
     for (auto v : ladder)
         rc |= run_dtype<float>("fp32", v, hx, hres, hw, N, H, eps, iters,

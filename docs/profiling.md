@@ -70,14 +70,16 @@ set needs. `NCU_SET=basic` is far cheaper (9 passes vs. 39 here) at the cost of
 fewer metrics. Use `ncu` for counters and stall reasons, CUDA events or `nsys`
 for time.
 
-As a concrete example, `make ncu KERNEL=rmsnorm_fused` on the default (v2,
-block-per-row) fp32 kernel at N=4096 H=2048 shows why the [fused RMSNorm
-write-up](../kernels/rmsnorm_fused/README.md#the-remaining-gap-fp32)'s "L2 serves
-the re-read" claim does not hold here: `lts__t_sector_hit_rate.pct` (L2 hit rate)
-is 0.39%, not the near-100% a cached re-read would need. Achieved occupancy is
-65.4% against a 66.7% theoretical ceiling set by warps per block, and
-`dram__bytes.sum.per_second` reads 540 GB/s -- essentially all of this kernel's
-traffic is going to DRAM, including the re-read.
+As a concrete example, `make ncu KERNEL=rmsnorm_fused` on the v2 (block-per-row)
+fp32 kernel at N=4096 H=2048 showed why an "L2 serves the re-read" assumption
+does not hold here: `lts__t_sector_hit_rate.pct` (L2 hit rate) was 0.39%, not
+the near-100% a cached re-read would need. That measurement is what motivated
+v3's register-cached rewrite, which the [fused RMSNorm
+write-up](../kernels/rmsnorm_fused/README.md#the-remaining-gap-closed-in-v3)
+covers; `ncu` on v3 shows the fix directly, as a drop in the kernel's own
+`gpu__time_duration.sum` (215.9us on v2 to 175.3us on v3, both under the same
+`--set full` replay) rather than as a hit-rate change, since v3 has no `h`
+re-read left for the profiler to measure a hit rate on.
 
 ## compute-sanitizer
 

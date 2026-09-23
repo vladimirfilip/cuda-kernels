@@ -15,7 +15,9 @@ SHAPES = [
     (1, 2048),        # single token
     (4096, 2048),     # Llama-3.2-1B hidden
     (4096, 3072),     # Llama-3.2-3B hidden
-    (2, 4097),        # H not a multiple of any vector width
+    (2, 4097),        # H not a multiple of any vector width -- v3 falls back to v2
+    (2, 2052),        # H % 4 == 0 but H % 8 != 0 -- v3 vectorizes in fp32, falls
+                       # back to v2 in bf16; nothing else in this file hits that split
     (128, 4096),
     (8192, 2048),     # large token count
 ]
@@ -72,3 +74,25 @@ def test_non_contiguous_inputs():
     ref_h, ref_out = ref_rmsnorm_add(x, residual, weight, 1e-5)
     torch.testing.assert_close(got_h, ref_h, **_TOL[torch.float32])
     torch.testing.assert_close(got_out, ref_out, **_TOL[torch.float32])
+
+
+@pytest.mark.parametrize("dtype", DTYPES)
+def test_misaligned_offset_contiguous(dtype):
+    """A tensor can be .is_contiguous() and still start at a storage offset
+    that is not 16-byte aligned -- e.g. slicing one element off a flat buffer.
+    v3's vectorized loads need every row 16-byte aligned; H here is a multiple
+    of the vector width in both dtypes, so this exercises the pointer-alignment
+    half of that check (not just the H % VEC half) rather than the H=4097 case
+    above, which never reaches it."""
+    torch.manual_seed(3)
+    n, h = 8, 2048
+    flat_x = torch.randn(n * h + 1, device="cuda", dtype=dtype)
+    x = flat_x[1:].view(n, h)
+    assert x.is_contiguous()
+    residual = torch.randn(n, h, device="cuda", dtype=dtype)
+    weight = torch.randn(h, device="cuda", dtype=dtype)
+
+    got_h, got_out = rmsnorm_add(x, residual, weight, 1e-5)
+    ref_h, ref_out = ref_rmsnorm_add(x, residual, weight, 1e-5)
+    torch.testing.assert_close(got_h, ref_h, **_TOL[dtype])
+    torch.testing.assert_close(got_out, ref_out, **_TOL[dtype])

@@ -4,9 +4,9 @@
 //   make ncu  KERNEL=matmul NCU_SET=full          # per-kernel hardware profile
 //   ./bin/matmul [M] [K] [N] [iters] [peak_gflops]
 //
-// Runs the naive and the shared-memory-tiled variant over the SAME inputs,
-// checks each against a CPU reference, and reports ms/launch + GFLOP/s. Exits
-// non-zero if either variant is outside tolerance, so `make run` is a smoke test.
+// Runs all three variants over the SAME inputs, checks each against a CPU
+// reference, and reports ms/launch + GFLOP/s. Exits non-zero if any variant is
+// outside tolerance, so `make run` is a smoke test.
 //
 // Dimensions default to non-square on purpose: a square problem hides indexing
 // bugs, because a [K,N] column stride of N and of K are then the same number.
@@ -115,6 +115,7 @@ int main(int argc, char **argv) {
                                           int, int, int, cudaStream_t); } variants[] = {
         {"naive", launch_matmul_naive},
         {"tiled", launch_matmul_tiled},
+        {"v2reg", launch_matmul_v2},
     };
 
     double naive_ms = 0.0;

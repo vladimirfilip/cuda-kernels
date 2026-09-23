@@ -9,11 +9,16 @@ import torch
 if not torch.cuda.is_available():
     pytest.skip("CUDA required", allow_module_level=True)
 
-from kernels.matmul.op import matmul_tiled
+from kernels.matmul.op import matmul_tiled, matmul_v2
+
+# Both ops share the same contract (and the same check_matmul_inputs on the
+# C++ side), so every test below runs against both.
+OPS = [matmul_tiled, matmul_v2]
+OP_IDS = ["tiled", "v2"]
 
 # (M, K, N). Deliberately mostly non-square and mostly not multiples of
-# TILE_WIDTH=16: a square problem makes the [K, N] column stride equal to K,
-# which hides row/column indexing bugs entirely.
+# TILE_WIDTH=16 or v2's BM=BN=64/BK=8 tile: a square problem makes the [K, N]
+# column stride equal to K, which hides row/column indexing bugs entirely.
 SHAPES = [
     (512, 384, 256),
     (256, 256, 256),    # square, the easy case
@@ -25,8 +30,9 @@ SHAPES = [
 ]
 
 
+@pytest.mark.parametrize("op", OPS, ids=OP_IDS)
 @pytest.mark.parametrize("shape", SHAPES)
-def test_matches_torch(shape):
+def test_matches_torch(op, shape):
     M, K, N = shape
     torch.manual_seed(0)
     a = torch.randn(M, K, device="cuda", dtype=torch.float32)
@@ -34,29 +40,32 @@ def test_matches_torch(shape):
     # fp64 reference: comparing two fp32 accumulation orders would mask a
     # systematically wrong kernel as "close enough".
     expected = (a.double() @ b.double()).float()
-    torch.testing.assert_close(matmul_tiled(a, b), expected, rtol=1e-4, atol=1e-4)
+    torch.testing.assert_close(op(a, b), expected, rtol=1e-4, atol=1e-4)
 
 
-def test_non_contiguous_inputs():
+@pytest.mark.parametrize("op", OPS, ids=OP_IDS)
+def test_non_contiguous_inputs(op):
     """The kernel indexes with tight row-major strides; the binding is
     responsible for making that true."""
     torch.manual_seed(0)
     a = torch.randn(384, 512, device="cuda", dtype=torch.float32).T  # non-contiguous
     b = torch.randn(384, 256, device="cuda", dtype=torch.float32)
     assert not a.is_contiguous()
-    torch.testing.assert_close(matmul_tiled(a, b), (a.double() @ b.double()).float(),
+    torch.testing.assert_close(op(a, b), (a.double() @ b.double()).float(),
                                rtol=1e-4, atol=1e-4)
 
 
-def test_shape_mismatch_raises():
+@pytest.mark.parametrize("op", OPS, ids=OP_IDS)
+def test_shape_mismatch_raises(op):
     a = torch.randn(8, 16, device="cuda")
     b = torch.randn(32, 8, device="cuda")
     with pytest.raises(RuntimeError, match="shape mismatch"):
-        matmul_tiled(a, b)
+        op(a, b)
 
 
-def test_rejects_non_float32():
+@pytest.mark.parametrize("op", OPS, ids=OP_IDS)
+def test_rejects_non_float32(op):
     a = torch.randn(8, 16, device="cuda", dtype=torch.float64)
     b = torch.randn(16, 8, device="cuda", dtype=torch.float64)
     with pytest.raises(RuntimeError, match="float32"):
-        matmul_tiled(a, b)
+        op(a, b)

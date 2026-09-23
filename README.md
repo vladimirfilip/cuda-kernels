@@ -14,9 +14,9 @@ shown plus the peak overrides listed in that file. Raw CSVs are in
 
 | kernel | language | result | write-up |
 |--------|----------|--------|----------|
-| Fused RMSNorm + residual | CUDA | fp32: 1.22x over the PyTorch pair at 84% of DRAM peak; bf16: 0.91x, slower | [read](kernels/rmsnorm_fused/) |
+| Fused RMSNorm + residual | CUDA | 1.23x (fp32) / 1.22x (bf16) over the PyTorch pair, ~85% of DRAM peak | [read](kernels/rmsnorm_fused/) |
 | FlashAttention-2 | Triton | 82% of PyTorch SDPA, 2.9-9.3x over naive, O(N) forward memory | [read](kernels/flash_attention/) |
-| Matmul (naive to tiled) | CUDA | 1.36x over naive; 6% of peak vs cuBLAS 50% | [read](kernels/matmul/) |
+| Matmul (naive to register-tiled) | CUDA | 4.8x over naive; 26% of peak vs cuBLAS 50% | [read](kernels/matmul/) |
 | Vector add | CUDA | measurement harness and the L2 benchmarking trap | [read](kernels/vector_add/) |
 
 Each directory holds what applies to that kernel: device code, PyTorch binding,
@@ -50,15 +50,26 @@ on mismatch, so `make run` doubles as a smoke test.
 
 ## Notes
 
-**RMSNorm: coalescing is worth 6.6x.** Moving from one thread per row to one warp
-per row takes fp32 from 12.4% to 81.5% of DRAM bandwidth with no change to the
-arithmetic, only which thread touches which address. One block per row barely moves fp32
-(82.6% vs 81.5%) and hurts bf16 badly (52.4% vs 96.7%): the cross-warp reduction
-costs more than the added parallelism buys. [Details](kernels/rmsnorm_fused/)
+**RMSNorm: coalescing is worth 6.6x, and a register cache recovers the rest.**
+Moving from one thread per row to one warp per row takes fp32 from 12.4% to
+81.7% of DRAM bandwidth with no change to the arithmetic, only which thread
+touches which address. One block per row barely moves fp32 (83.2% vs 81.7%) and
+hurts bf16 badly (52.4% vs 96.7%): the cross-warp reduction costs more than the
+added parallelism buys -- until the same kernel also vectorizes its loads and
+keeps the row it just computed in registers instead of re-reading it from
+global memory, which lands fp32 at 86.8% (the best in the ladder) and recovers
+bf16 to 96.5% without giving up the cross-warp reduction.
+[Details](kernels/rmsnorm_fused/)
+
+**Matmul: register tiling turns one FMA per two shared-memory reads into
+sixteen per eight.** Each thread computing a 4x4 patch of the output instead of
+one element takes the kernel from 6% to 26% of the card's fp32 peak, 4.8x over
+the naive kernel and briefly ahead of cuBLAS at 512^3 before cuBLAS's own
+blocking scales past it. [Details](kernels/matmul/)
 
 **FlashAttention: Triton's `tl.dot` runs fp32 on TF32 tensor cores by default.**
 Against an fp64 reference the default was 2.3e-03, versus PyTorch fp32 SDPA at
-6.5e-07. `input_precision="ieee"` brings it to 4.0e-07 and roughly doubles
+5.5e-07. `input_precision="ieee"` brings it to 4.0e-07 and roughly doubles
 shared-memory use, so the tile schedule depends on dtype.
 [Details](kernels/flash_attention/)
 
@@ -81,7 +92,7 @@ tile size, head dimensions that aren't powers of two, hidden sizes that aren't
 multiples of any vector width, non-square matmuls, degenerate `K=1` cases.
 
 ```bash
-make test        # 78 cases
+make test        # 94 cases
 ```
 
 ## Profiling
