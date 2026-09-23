@@ -16,7 +16,7 @@ shown plus the peak overrides listed in that file. Raw CSVs are in
 |--------|----------|--------|----------|
 | Fused RMSNorm + residual | CUDA | 1.23x (fp32) / 1.22x (bf16) over the PyTorch pair, ~85% of DRAM peak | [read](kernels/rmsnorm_fused/) |
 | FlashAttention-2 | Triton | 82% of PyTorch SDPA, 2.9-9.3x over naive, O(N) forward memory | [read](kernels/flash_attention/) |
-| Matmul (naive to register-tiled) | CUDA | 4.8x over naive; 26% of peak vs cuBLAS 50% | [read](kernels/matmul/) |
+| Matmul (naive to register-tiled) | CUDA | 6.2x over naive at 2048^3; 32% of peak vs cuBLAS 50% at 4096^3 | [read](kernels/matmul/) |
 | Vector add | CUDA | measurement harness and the L2 benchmarking trap | [read](kernels/vector_add/) |
 
 Each directory holds what applies to that kernel: device code, PyTorch binding,
@@ -61,11 +61,14 @@ global memory, which lands fp32 at 86.8% (the best in the ladder) and recovers
 bf16 to 96.5% without giving up the cross-warp reduction.
 [Details](kernels/rmsnorm_fused/)
 
-**Matmul: register tiling turns one FMA per two shared-memory reads into
-sixteen per eight.** Each thread computing a 4x4 patch of the output instead of
-one element takes the kernel from 6% to 26% of the card's fp32 peak, 4.8x over
-the naive kernel and briefly ahead of cuBLAS at 512^3 before cuBLAS's own
-blocking scales past it. [Details](kernels/matmul/)
+**Matmul: a bigger register tile is not a strict win -- it trades small-problem
+performance for large-problem performance.** Going from a 4x4 to an 8x8
+per-thread output patch (plus vectorizing the shared-memory reads that feed
+it) takes the kernel from 26% to 32% of the card's fp32 peak at 4096^3, but
+loses to the smaller tile by 10% at 1024^3: a 128x128 output tile means too
+few blocks to fill the card's 48 SMs at that size. Both rungs stay in the
+ladder; which one you'd pick depends on the shape.
+[Details](kernels/matmul/)
 
 **FlashAttention: Triton's `tl.dot` runs fp32 on TF32 tensor cores by default.**
 Against an fp64 reference the default was 2.3e-03, versus PyTorch fp32 SDPA at
@@ -92,7 +95,7 @@ tile size, head dimensions that aren't powers of two, hidden sizes that aren't
 multiples of any vector width, non-square matmuls, degenerate `K=1` cases.
 
 ```bash
-make test        # 94 cases
+make test        # 104 cases
 ```
 
 ## Profiling

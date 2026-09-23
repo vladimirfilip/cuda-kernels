@@ -4,7 +4,7 @@
 //   make ncu  KERNEL=matmul NCU_SET=full          # per-kernel hardware profile
 //   ./bin/matmul [M] [K] [N] [iters] [peak_gflops]
 //
-// Runs all three variants over the SAME inputs, checks each against a CPU
+// Runs all four variants over the SAME inputs, checks each against a CPU
 // reference, and reports ms/launch + GFLOP/s. Exits non-zero if any variant is
 // outside tolerance, so `make run` is a smoke test.
 //
@@ -116,6 +116,7 @@ int main(int argc, char **argv) {
         {"naive", launch_matmul_naive},
         {"tiled", launch_matmul_tiled},
         {"v2reg", launch_matmul_v2},
+        {"v3wide", launch_matmul_v3},
     };
 
     double naive_ms = 0.0;

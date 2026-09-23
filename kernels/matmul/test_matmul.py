@@ -9,16 +9,17 @@ import torch
 if not torch.cuda.is_available():
     pytest.skip("CUDA required", allow_module_level=True)
 
-from kernels.matmul.op import matmul_tiled, matmul_v2
+from kernels.matmul.op import matmul_tiled, matmul_v2, matmul_v3
 
-# Both ops share the same contract (and the same check_matmul_inputs on the
-# C++ side), so every test below runs against both.
-OPS = [matmul_tiled, matmul_v2]
-OP_IDS = ["tiled", "v2"]
+# All three ops share the same contract (and the same check_matmul_inputs on
+# the C++ side), so every test below runs against all three.
+OPS = [matmul_tiled, matmul_v2, matmul_v3]
+OP_IDS = ["tiled", "v2", "v3"]
 
 # (M, K, N). Deliberately mostly non-square and mostly not multiples of
-# TILE_WIDTH=16 or v2's BM=BN=64/BK=8 tile: a square problem makes the [K, N]
-# column stride equal to K, which hides row/column indexing bugs entirely.
+# TILE_WIDTH=16, v2's BM=BN=64/BK=8 tile, or v3's BM3=BN3=128/BK3=8 tile: a
+# square problem makes the [K, N] column stride equal to K, which hides
+# row/column indexing bugs entirely.
 SHAPES = [
     (512, 384, 256),
     (256, 256, 256),    # square, the easy case

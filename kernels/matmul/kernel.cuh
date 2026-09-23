@@ -1,7 +1,7 @@
 // Single-precision matmul: C = A @ B, row-major.
 //   A : [M, K]   B : [K, N]   C : [M, N]
 //
-// Three variants, sharing one launch surface so the standalone driver and the
+// Four variants, sharing one launch surface so the standalone driver and the
 // PyTorch binding exercise exactly the same device code:
 //
 //   v0 "naive"    : one thread per output element, K global loads per thread.
@@ -16,6 +16,10 @@
 //                   memory now feeds TM (or TN) FMAs instead of one, so the
 //                   kernel moves from shared-memory-bandwidth-bound toward
 //                   FMA-bound. See the comment above matmul_v2_kernel.
+//   v3 "wide"     : v2's idea at a bigger tile (8x8 per thread instead of
+//                   4x4), with the shared-memory reads that feed each phase's
+//                   FMAs done as float4 loads instead of scalar ones. See the
+//                   comment above matmul_v3_kernel.
 #pragma once
 
 #include "../_common/cuda_check.cuh"
@@ -35,6 +39,19 @@ static_assert((BM * BK) % THREADS_V2 == 0, "BM*BK must divide THREADS_V2");
 static_assert((BK * BN) % THREADS_V2 == 0, "BK*BN must divide THREADS_V2");
 constexpr int LOADS_A_V2 = (BM * BK) / THREADS_V2;
 constexpr int LOADS_B_V2 = (BK * BN) / THREADS_V2;
+
+// v3 tile shape: same idea as v2's, doubled in every dimension (128x128 output
+// tile, 8x8 per thread). THREADS_V3 stays 256 -- a bigger tile means fewer,
+// bigger blocks, not more threads per block.
+constexpr int BM3 = 128, BN3 = 128, BK3 = 8, TM3 = 8, TN3 = 8;
+constexpr int THREADS_V3 = (BM3 / TM3) * (BN3 / TN3);  // 256
+static_assert((BM3 * BK3) % THREADS_V3 == 0, "BM3*BK3 must divide THREADS_V3");
+static_assert((BK3 * BN3) % THREADS_V3 == 0, "BK3*BN3 must divide THREADS_V3");
+constexpr int LOADS_A_V3 = (BM3 * BK3) / THREADS_V3;
+constexpr int LOADS_B_V3 = (BK3 * BN3) / THREADS_V3;
+// The compute loop below reads TM3 (or TN3) values per phase-step as float4s;
+// both need to be a multiple of 4 for that split to cover them exactly.
+static_assert(TM3 % 4 == 0 && TN3 % 4 == 0, "TM3, TN3 must be multiples of 4");
 
 // v0: one thread per output element.
 __global__ void matmul_naive_kernel(const float *__restrict__ a,
@@ -161,6 +178,104 @@ __global__ void matmul_v2_kernel(const float *__restrict__ a,
     }
 }
 
+// v3: v2's idea, doubled tile, vectorized shared-memory reads.
+//
+// v2's own remaining gap (see the matmul README): a 4x4 register tile gives
+// each thread 16 FMAs per 8 shared-memory reads -- better than v1's 1 FMA per
+// 2 reads, but each of those 8 reads is still a separate scalar instruction.
+// v3 widens the per-thread tile to 8x8 (64 FMAs per phase-step, same 1:2
+// read:FMA ratio as v2 since read count scales with FMA count too, but now
+// spread over far fewer, far bigger blocks) and reads regM/regN as float4s
+// instead of one float at a time, so the same 16 values arrive in 4 wide
+// instructions instead of 16 scalar ones.
+//
+// float4 needs the address 16-byte aligned. Bs[kk][thread_col*TN3 + i] is:
+// Bs is [BK3][BN3] row-major, thread_col*TN3 is always a multiple of TN3=8
+// floats (32 bytes), and each Bs row is BN3=128 floats (512 bytes) from the
+// last, both multiples of 16 -- so every float4 read lands on a 16-byte
+// boundary regardless of M, K, N. That only works because BN3 and TN3 are
+// compile-time constants this kernel controls; it says nothing about the
+// caller's A, B, C, which is why the vectorizing stops here rather than
+// reaching into the global loads below (see the README for the trade-off).
+//
+// Reading a TM3-wide run of A the same way needs A's shared-memory tile
+// TRANSPOSED: the natural [BM3][BK3] layout has BK3 (not BM3) as the fast
+// axis, so TM3 consecutive rows at a fixed k are BK3 floats apart, not
+// contiguous. Staging A into As_t[BK3][BM3] instead -- writing element (r, cc)
+// of the logical BM3 x BK3 tile to As_t[cc][r] -- makes a fixed k's row of
+// As_t exactly as contiguous as Bs's, at the cost of one extra index swap in
+// the staging loop below. The global read pattern doesn't change, only where
+// each value lands in shared memory.
+__global__ void matmul_v3_kernel(const float *__restrict__ a,
+                                 const float *__restrict__ b,
+                                 float *__restrict__ c, int M, int K, int N) {
+    __shared__ __align__(16) float As_t[BK3][BM3];  // transposed: [k][m]
+    __shared__ __align__(16) float Bs[BK3][BN3];
+
+    const int block_row = blockIdx.y * BM3;
+    const int block_col = blockIdx.x * BN3;
+
+    const int tid = threadIdx.x;
+    const int thread_row = tid / (BN3 / TN3);
+    const int thread_col = tid % (BN3 / TN3);
+
+    float acc[TM3][TN3] = {};
+
+    for (int k0 = 0; k0 < K; k0 += BK3) {
+        // Global reads stay scalar and bounds-checked, same as v2 -- see the
+        // comment above this kernel for why. Only the write side transposes.
+#pragma unroll
+        for (int i = 0; i < LOADS_A_V3; ++i) {
+            const int idx = tid * LOADS_A_V3 + i;
+            const int r = idx / BK3, cc = idx % BK3;
+            const int gr = block_row + r, gc = k0 + cc;
+            As_t[cc][r] = (gr < M && gc < K) ? a[(size_t)gr * K + gc] : 0.0f;
+        }
+#pragma unroll
+        for (int i = 0; i < LOADS_B_V3; ++i) {
+            const int idx = tid * LOADS_B_V3 + i;
+            const int r = idx / BN3, cc = idx % BN3;
+            const int gr = k0 + r, gc = block_col + cc;
+            Bs[r][cc] = (gr < K && gc < N) ? b[(size_t)gr * N + gc] : 0.0f;
+        }
+        __syncthreads();
+
+#pragma unroll
+        for (int kk = 0; kk < BK3; ++kk) {
+            float regM[TM3], regN[TN3];
+#pragma unroll
+            for (int i = 0; i < TM3; i += 4) {
+                float4 v = *reinterpret_cast<const float4 *>(&As_t[kk][thread_row * TM3 + i]);
+                regM[i] = v.x; regM[i + 1] = v.y; regM[i + 2] = v.z; regM[i + 3] = v.w;
+            }
+#pragma unroll
+            for (int j = 0; j < TN3; j += 4) {
+                float4 v = *reinterpret_cast<const float4 *>(&Bs[kk][thread_col * TN3 + j]);
+                regN[j] = v.x; regN[j + 1] = v.y; regN[j + 2] = v.z; regN[j + 3] = v.w;
+            }
+#pragma unroll
+            for (int i = 0; i < TM3; ++i)
+#pragma unroll
+                for (int j = 0; j < TN3; ++j) acc[i][j] += regM[i] * regN[j];
+        }
+        __syncthreads();
+    }
+
+    // Output write stays scalar and bounds-checked, same reason as the global
+    // reads above: C's row stride is N * sizeof(float), which this kernel
+    // does not control and cannot assume is 16-byte aligned.
+#pragma unroll
+    for (int i = 0; i < TM3; ++i) {
+        const int gr = block_row + thread_row * TM3 + i;
+        if (gr >= M) continue;
+#pragma unroll
+        for (int j = 0; j < TN3; ++j) {
+            const int gc = block_col + thread_col * TN3 + j;
+            if (gc < N) c[(size_t)gr * N + gc] = acc[i][j];
+        }
+    }
+}
+
 inline void launch_matmul_naive(const float *a, const float *b, float *c, int M,
                                 int K, int N, cudaStream_t stream = 0) {
     dim3 block(16, 16);
@@ -180,4 +295,11 @@ inline void launch_matmul_v2(const float *a, const float *b, float *c, int M,
     dim3 block(THREADS_V2);
     dim3 grid(cdiv(N, BN), cdiv(M, BM));
     matmul_v2_kernel<<<grid, block, 0, stream>>>(a, b, c, M, K, N);
+}
+
+inline void launch_matmul_v3(const float *a, const float *b, float *c, int M,
+                             int K, int N, cudaStream_t stream = 0) {
+    dim3 block(THREADS_V3);
+    dim3 grid(cdiv(N, BN3), cdiv(M, BM3));
+    matmul_v3_kernel<<<grid, block, 0, stream>>>(a, b, c, M, K, N);
 }

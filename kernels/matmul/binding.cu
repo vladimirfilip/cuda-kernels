@@ -67,14 +67,38 @@ torch::Tensor matmul_v2(torch::Tensor a, torch::Tensor b) {
     return c;
 }
 
+// Same contract as matmul_tiled, dispatching to the wider register-tiled v3
+// kernel (8x8 per thread, vectorized shared-memory reads).
+torch::Tensor matmul_v3(torch::Tensor a, torch::Tensor b) {
+    check_matmul_inputs(a, b);
+
+    a = a.contiguous();
+    b = b.contiguous();
+
+    const int M = a.size(0);
+    const int K = a.size(1);
+    const int N = b.size(1);
+
+    auto c = torch::empty({M, N}, a.options());
+
+    launch_matmul_v3(a.data_ptr<float>(), b.data_ptr<float>(),
+                     c.data_ptr<float>(), M, K, N,
+                     c10::cuda::getCurrentCUDAStream());
+    TORCH_CHECK(cudaGetLastError() == cudaSuccess,
+                "matmul_v3 kernel launch failed");
+    return c;
+}
+
 // Declare the ops' schemas in the "cuda_kernels" namespace.
 TORCH_LIBRARY(cuda_kernels, m) {
     m.def("matmul_tiled(Tensor a, Tensor b) -> Tensor");
     m.def("matmul_v2(Tensor a, Tensor b) -> Tensor");
+    m.def("matmul_v3(Tensor a, Tensor b) -> Tensor");
 }
 
 // Bind the CUDA implementations to those schemas.
 TORCH_LIBRARY_IMPL(cuda_kernels, CUDA, m) {
     m.impl("matmul_tiled", &matmul_tiled);
     m.impl("matmul_v2", &matmul_v2);
+    m.impl("matmul_v3", &matmul_v3);
 }

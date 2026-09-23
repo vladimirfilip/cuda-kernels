@@ -18,7 +18,7 @@ from pathlib import Path
 import torch
 
 from kernels._common.timing import cuda_time_ms
-from kernels.matmul.op import matmul_tiled, matmul_v2
+from kernels.matmul.op import matmul_tiled, matmul_v2, matmul_v3
 
 # (M, K, N)
 SHAPES = [
@@ -67,6 +67,7 @@ def main():
             "cublas": cuda_time_ms(partial(torch.matmul, a, b)),
             "tiled": cuda_time_ms(partial(matmul_tiled, a, b)),
             "v2reg": cuda_time_ms(partial(matmul_v2, a, b)),
+            "v3wide": cuda_time_ms(partial(matmul_v3, a, b)),
         }
         flops = 2.0 * M * N * K
         for name, t in ms.items():
